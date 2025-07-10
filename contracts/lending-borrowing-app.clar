@@ -10,13 +10,16 @@
 (define-constant COLLATERAL_RATIO u150)
 (define-constant LIQUIDATION_THRESHOLD u120)
 (define-constant LIQUIDATION_PENALTY u10)
+(define-constant ANNUAL_INTEREST_RATE u500)
+(define-constant SECONDS_PER_YEAR u31536000)
 
 (define-map loans
   { borrower: principal }
   {
     collateral-amount: uint,
     borrowed-amount: uint,
-    is-active: bool
+    is-active: bool,
+    loan-timestamp: uint
   }
 )
 
@@ -100,7 +103,8 @@
       {
         collateral-amount: collateral-amount,
         borrowed-amount: borrow-amount,
-        is-active: true
+        is-active: true,
+        loan-timestamp: stacks-block-height
       }
     )
     (var-set total-borrowed (+ current-borrowed borrow-amount))
@@ -113,16 +117,20 @@
     (loan (unwrap! (map-get? loans { borrower: tx-sender }) ERR_LOAN_NOT_FOUND))
     (borrowed-amount (get borrowed-amount loan))
     (collateral-amount (get collateral-amount loan))
+    (loan-timestamp (get loan-timestamp loan))
     (current-borrowed (var-get total-borrowed))
+    (blocks-elapsed (- stacks-block-height loan-timestamp))
+    (interest-amount (/ (* borrowed-amount ANNUAL_INTEREST_RATE blocks-elapsed) (* u100 u52560)))
+    (total-repayment (+ borrowed-amount interest-amount))
   )
     (asserts! (get is-active loan) ERR_LOAN_NOT_FOUND)
     (asserts! (> amount u0) ERR_INVALID_AMOUNT)
-    (asserts! (>= amount borrowed-amount) ERR_INSUFFICIENT_BALANCE)
+    (asserts! (>= amount total-repayment) ERR_INSUFFICIENT_BALANCE)
     (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
     (try! (as-contract (stx-transfer? collateral-amount tx-sender tx-sender)))
     (map-delete loans { borrower: tx-sender })
     (var-set total-borrowed (- current-borrowed borrowed-amount))
-    (ok { repaid: amount, collateral-returned: collateral-amount })
+    (ok { repaid: amount, collateral-returned: collateral-amount, interest: interest-amount })
   )
 )
 
@@ -195,4 +203,31 @@
 
 (define-read-only (get-max-borrow (collateral-amount uint))
   (/ (* collateral-amount u100) COLLATERAL_RATIO)
+)
+
+(define-read-only (calculate-interest (borrower principal))
+  (match (map-get? loans { borrower: borrower })
+    loan (let (
+      (borrowed-amount (get borrowed-amount loan))
+      (loan-timestamp (get loan-timestamp loan))
+      (blocks-elapsed (- stacks-block-height loan-timestamp))
+    )
+      (some (/ (* borrowed-amount ANNUAL_INTEREST_RATE blocks-elapsed) (* u100 u52560)))
+    )
+    none
+  )
+)
+
+(define-read-only (get-total-debt (borrower principal))
+  (match (map-get? loans { borrower: borrower })
+    loan (let (
+      (borrowed-amount (get borrowed-amount loan))
+      (loan-timestamp (get loan-timestamp loan))
+      (blocks-elapsed (- stacks-block-height loan-timestamp))
+      (interest-amount (/ (* borrowed-amount ANNUAL_INTEREST_RATE blocks-elapsed) (* u100 u52560)))
+    )
+      (some (+ borrowed-amount interest-amount))
+    )
+    none
+  )
 )
