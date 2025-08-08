@@ -6,6 +6,7 @@
 (define-constant ERR_LOAN_HEALTHY (err u104))
 (define-constant ERR_INVALID_AMOUNT (err u105))
 (define-constant ERR_LOAN_EXISTS (err u106))
+(define-constant ERR_OVERPAYMENT (err u107))
 
 (define-constant COLLATERAL_RATIO u150)
 (define-constant LIQUIDATION_THRESHOLD u120)
@@ -121,16 +122,34 @@
     (current-borrowed (var-get total-borrowed))
     (blocks-elapsed (- stacks-block-height loan-timestamp))
     (interest-amount (/ (* borrowed-amount ANNUAL_INTEREST_RATE blocks-elapsed) (* u100 u52560)))
-    (total-repayment (+ borrowed-amount interest-amount))
+    (total-debt (+ borrowed-amount interest-amount))
+    (remaining-debt (- total-debt amount))
   )
     (asserts! (get is-active loan) ERR_LOAN_NOT_FOUND)
     (asserts! (> amount u0) ERR_INVALID_AMOUNT)
-    (asserts! (>= amount total-repayment) ERR_INSUFFICIENT_BALANCE)
+    (asserts! (<= amount total-debt) ERR_OVERPAYMENT)
     (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
-    (try! (as-contract (stx-transfer? collateral-amount tx-sender tx-sender)))
-    (map-delete loans { borrower: tx-sender })
-    (var-set total-borrowed (- current-borrowed borrowed-amount))
-    (ok { repaid: amount, collateral-returned: collateral-amount, interest: interest-amount })
+    (if (is-eq remaining-debt u0)
+      (begin
+        (try! (as-contract (stx-transfer? collateral-amount tx-sender tx-sender)))
+        (map-delete loans { borrower: tx-sender })
+        (var-set total-borrowed (- current-borrowed borrowed-amount))
+        (ok { repaid: amount, remaining-debt: u0, collateral-returned: collateral-amount, loan-closed: true })
+      )
+      (begin
+        (map-set loans
+          { borrower: tx-sender }
+          {
+            collateral-amount: collateral-amount,
+            borrowed-amount: remaining-debt,
+            is-active: true,
+            loan-timestamp: stacks-block-height
+          }
+        )
+        (var-set total-borrowed (- (+ current-borrowed interest-amount) amount))
+        (ok { repaid: amount, remaining-debt: remaining-debt, collateral-returned: u0, loan-closed: false })
+      )
+    )
   )
 )
 
@@ -229,5 +248,12 @@
       (some (+ borrowed-amount interest-amount))
     )
     none
+  )
+)
+
+(define-read-only (get-remaining-debt (borrower principal))
+  (match (map-get? loans { borrower: borrower })
+    loan (get borrowed-amount loan)
+    u0
   )
 )
