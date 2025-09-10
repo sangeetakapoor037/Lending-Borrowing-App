@@ -7,12 +7,15 @@
 (define-constant ERR_INVALID_AMOUNT (err u105))
 (define-constant ERR_LOAN_EXISTS (err u106))
 (define-constant ERR_OVERPAYMENT (err u107))
+(define-constant ERR_MAX_EXTENSIONS (err u108))
 
 (define-constant COLLATERAL_RATIO u150)
 (define-constant LIQUIDATION_THRESHOLD u120)
 (define-constant LIQUIDATION_PENALTY u10)
 (define-constant ANNUAL_INTEREST_RATE u500)
 (define-constant SECONDS_PER_YEAR u31536000)
+(define-constant EXTENSION_FEE_RATE u200)
+(define-constant MAX_EXTENSIONS u3)
 
 (define-map loans
   { borrower: principal }
@@ -20,7 +23,8 @@
     collateral-amount: uint,
     borrowed-amount: uint,
     is-active: bool,
-    loan-timestamp: uint
+    loan-timestamp: uint,
+    extensions-used: uint
   }
 )
 
@@ -105,7 +109,8 @@
         collateral-amount: collateral-amount,
         borrowed-amount: borrow-amount,
         is-active: true,
-        loan-timestamp: stacks-block-height
+        loan-timestamp: stacks-block-height,
+        extensions-used: u0
       }
     )
     (var-set total-borrowed (+ current-borrowed borrow-amount))
@@ -143,7 +148,8 @@
             collateral-amount: collateral-amount,
             borrowed-amount: remaining-debt,
             is-active: true,
-            loan-timestamp: stacks-block-height
+            loan-timestamp: stacks-block-height,
+            extensions-used: (get extensions-used loan)
           }
         )
         (var-set total-borrowed (- (+ current-borrowed interest-amount) amount))
@@ -255,5 +261,54 @@
   (match (map-get? loans { borrower: borrower })
     loan (get borrowed-amount loan)
     u0
+  )
+)
+
+(define-public (extend-loan)
+  (let (
+    (loan (unwrap! (map-get? loans { borrower: tx-sender }) ERR_LOAN_NOT_FOUND))
+    (borrowed-amount (get borrowed-amount loan))
+    (collateral-amount (get collateral-amount loan))
+    (loan-timestamp (get loan-timestamp loan))
+    (extensions-used (get extensions-used loan))
+    (blocks-elapsed (- stacks-block-height loan-timestamp))
+    (current-interest (/ (* borrowed-amount ANNUAL_INTEREST_RATE blocks-elapsed) (* u100 u52560)))
+    (extension-fee (/ (* borrowed-amount EXTENSION_FEE_RATE) u10000))
+    (total-fee-due (+ current-interest extension-fee))
+  )
+    (asserts! (get is-active loan) ERR_LOAN_NOT_FOUND)
+    (asserts! (< extensions-used MAX_EXTENSIONS) ERR_MAX_EXTENSIONS)
+    (try! (stx-transfer? total-fee-due tx-sender (as-contract tx-sender)))
+    (map-set loans
+      { borrower: tx-sender }
+      {
+        collateral-amount: collateral-amount,
+        borrowed-amount: borrowed-amount,
+        is-active: true,
+        loan-timestamp: stacks-block-height,
+        extensions-used: (+ extensions-used u1)
+      }
+    )
+    (ok { 
+      extension-fee: extension-fee, 
+      interest-paid: current-interest, 
+      total-paid: total-fee-due, 
+      extensions-remaining: (- MAX_EXTENSIONS (+ extensions-used u1))
+    })
+  )
+)
+
+(define-read-only (calculate-extension-cost (borrower principal))
+  (match (map-get? loans { borrower: borrower })
+    loan (let (
+      (borrowed-amount (get borrowed-amount loan))
+      (loan-timestamp (get loan-timestamp loan))
+      (blocks-elapsed (- stacks-block-height loan-timestamp))
+      (current-interest (/ (* borrowed-amount ANNUAL_INTEREST_RATE blocks-elapsed) (* u100 u52560)))
+      (extension-fee (/ (* borrowed-amount EXTENSION_FEE_RATE) u10000))
+    )
+      (some (+ current-interest extension-fee))
+    )
+    none
   )
 )
