@@ -312,3 +312,61 @@
     none
   )
 )
+
+(define-public (add-collateral (amount uint))
+  (let (
+    (loan (unwrap! (map-get? loans { borrower: tx-sender }) ERR_LOAN_NOT_FOUND))
+    (current-collateral (get collateral-amount loan))
+    (borrowed-amount (get borrowed-amount loan))
+    (loan-timestamp (get loan-timestamp loan))
+    (extensions-used (get extensions-used loan))
+    (new-collateral (+ current-collateral amount))
+  )
+    (asserts! (get is-active loan) ERR_LOAN_NOT_FOUND)
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (map-set loans
+      { borrower: tx-sender }
+      {
+        collateral-amount: new-collateral,
+        borrowed-amount: borrowed-amount,
+        is-active: true,
+        loan-timestamp: loan-timestamp,
+        extensions-used: extensions-used
+      }
+    )
+    (ok { 
+      added: amount, 
+      total-collateral: new-collateral,
+      new-health-ratio: (/ (* new-collateral u100) borrowed-amount)
+    })
+  )
+)
+
+(define-read-only (calculate-safe-collateral (borrower principal))
+  (match (map-get? loans { borrower: borrower })
+    loan (let (
+      (borrowed-amount (get borrowed-amount loan))
+      (safe-collateral (/ (* borrowed-amount COLLATERAL_RATIO) u100))
+    )
+      (some safe-collateral)
+    )
+    none
+  )
+)
+
+(define-read-only (get-collateral-shortfall (borrower principal))
+  (match (map-get? loans { borrower: borrower })
+    loan (let (
+      (current-collateral (get collateral-amount loan))
+      (borrowed-amount (get borrowed-amount loan))
+      (safe-collateral (/ (* borrowed-amount COLLATERAL_RATIO) u100))
+    )
+      (if (< current-collateral safe-collateral)
+        (some (- safe-collateral current-collateral))
+        (some u0)
+      )
+    )
+    none
+  )
+)
