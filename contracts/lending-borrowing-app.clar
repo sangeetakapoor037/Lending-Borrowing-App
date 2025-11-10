@@ -370,3 +370,36 @@
     none
   )
 )
+
+(define-public (withdraw-collateral (amount uint))
+  (let (
+    (loan (unwrap! (map-get? loans { borrower: tx-sender }) ERR_LOAN_NOT_FOUND))
+    (current-collateral (get collateral-amount loan))
+    (borrowed-amount (get borrowed-amount loan))
+    (loan-timestamp (get loan-timestamp loan))
+    (extensions-used (get extensions-used loan))
+    (required-collateral (/ (* borrowed-amount COLLATERAL_RATIO) u100))
+    (new-collateral (- current-collateral amount))
+  )
+    (asserts! (get is-active loan) ERR_LOAN_NOT_FOUND)
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (>= current-collateral amount) ERR_INSUFFICIENT_BALANCE)
+    (asserts! (>= new-collateral required-collateral) ERR_INSUFFICIENT_COLLATERAL)
+    (try! (as-contract (stx-transfer? amount tx-sender tx-sender)))
+    (map-set loans
+      { borrower: tx-sender }
+      {
+        collateral-amount: new-collateral,
+        borrowed-amount: borrowed-amount,
+        is-active: true,
+        loan-timestamp: loan-timestamp,
+        extensions-used: extensions-used
+      }
+    )
+    (ok {
+      withdrawn: amount,
+      remaining-collateral: new-collateral,
+      new-health-ratio: (/ (* new-collateral u100) borrowed-amount)
+    })
+  )
+)
